@@ -15,6 +15,7 @@
 #include "XrdOuc/XrdOuca2x.hh"
 #include "XrdOuc/XrdOucEnv.hh"
 #include "XrdOuc/XrdOucErrInfo.hh"
+#include "XrdOuc/XrdOucGatherConf.hh"
 #include "XrdOuc/XrdOucProg.hh"
 #include "XrdOuc/XrdOucStream.hh"
 #include "XrdOuc/XrdOucString.hh"
@@ -797,8 +798,10 @@ extern "C"
 {
 XrdOfsPrepare *XrdOfsgetPrepare(XrdOfsgetPrepareArguments)
 {
-   XrdOucString Parms, RunPgm, Token;
-   int maxReq = 4, tokPos = 0;
+   XrdOucGatherConf gpiConf("prepgpi.parms", eDest);
+   XrdOucString RunPgm, Token;
+   char *tokP;
+   int maxReq = 4;
 
 // Save some of the arguments that we may need later
 //
@@ -806,23 +809,29 @@ XrdOfsPrepare *XrdOfsgetPrepare(XrdOfsgetPrepareArguments)
    ossP   = theOss;
    schedP = (XrdScheduler *)(envP->GetPtr("XrdScheduler*"));
 
-// Make sure parameters have been specified
+// If parameters specified on the preplib directive, use them. Otherwise,
+// get them from the config file.
 //
-   if (!parms || !(*parms))
+   if (!gpiConf.useData(parms)
+   &&  gpiConf.Gather(confg, XrdOucGatherConf::only_body) < 0) return 0;
+
+// Verify we actually have parameters (there is only one line of them).
+//
+   if (!(tokP = gpiConf.GetLine()) || !*tokP)
       {eLog->Emsg("PrepGPI", "Parameters not specified.");
        return 0;
       }
 
 // Parse the parameters, they are space delimited
 //
-   Parms = parms;
-   while((tokPos = Parms.tokenize(Token, tokPos, ' ')) != -1)
-        {     if (Token == "-admit")
-                 {if ((tokPos = Parms.tokenize(Token, tokPos, ' ')) == -1)
+   while((tokP = gpiConf.GetToken()))
+        {Token = tokP;
+              if (Token == "-admit")
+                 {if (!(tokP = gpiConf.GetToken()) || *tokP == '-')
                      {eLog->Emsg("PrepGPI", "-admit argument not specified.");
                       return 0;
                      }
-                  XrdOucString Args(Token);
+                  XrdOucString Args(tokP);
                   int argPos = 0;
                   bool argOK = false;
                   while((argPos = Args.tokenize(Token, argPos, ',')) != -1)
@@ -846,35 +855,36 @@ XrdOfsPrepare *XrdOfsgetPrepare(XrdOfsgetPrepareArguments)
          else if (Token == "-cgi")   addCGI= true;
          else if (Token == "-debug") Debug = true;
          else if (Token == "-maxfiles")
-                 {if ((tokPos = Parms.tokenize(Token, tokPos, ' ')) == -1)
+                 {if (!(tokP = gpiConf.GetToken()) || *tokP == '-')
                      {eLog->Emsg("PrepGPI", "-maxfiles argument not specified.");
                       return 0;
                      }
-                  if (XrdOuca2x::a2i(*eLog, "PrepPGI -maxfiles", Token.c_str(),
+                  if (XrdOuca2x::a2i(*eLog, "PrepPGI -maxfiles", tokP,
                                             &maxFiles, 1, 48)) return 0;
                  }
          else if (Token == "-maxquery")
-                 {if ((tokPos = Parms.tokenize(Token, tokPos, ' ')) == -1)
+                 {if (!(tokP = gpiConf.GetToken()) || *tokP == '-')
                      {eLog->Emsg("PrepGPI", "-maxquery argument not specified.");
                       return 0;
                      }
-                  if (XrdOuca2x::a2i(*eLog, "PrepPGI -maxquery", Token.c_str(),
+                  if (XrdOuca2x::a2i(*eLog, "PrepPGI -maxquery", tokP,
                                             &qryAllow, 1, 64)) return 0;
                  }
          else if (Token == "-maxreq")
-                 {if ((tokPos = Parms.tokenize(Token, tokPos, ' ')) == -1)
+                 {if (!(tokP = gpiConf.GetToken()) || *tokP == '-')
                      {eLog->Emsg("PrepGPI", "-maxreq argument not specified.");
                       return 0;
                      }
-                  if (XrdOuca2x::a2i(*eLog, "PrepPGI -maxreq", Token.c_str(),
+                  if (XrdOuca2x::a2i(*eLog, "PrepPGI -maxreq", tokP,
                                             &maxReq, 1, 64)) return 0;
                  }
          else if (Token == "-pfn")   usePFN = true;
          else if (Token == "-run")
-                 {if ((tokPos = Parms.tokenize(RunPgm, tokPos, ' ')) == -1)
+                 {if (!(tokP = gpiConf.GetToken()) || *tokP == '-')
                      {eLog->Emsg("PrepGPI", "-run argument not specified.");
                       return 0;
                      }
+                  RunPgm = tokP;
                  }
          else {eLog->Emsg("PrepGPI", "Invalid option -", Token.c_str());
                return 0;

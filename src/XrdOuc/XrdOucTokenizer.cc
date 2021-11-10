@@ -58,7 +58,7 @@ char *XrdOucTokenizer::GetLine()
 
 // Check if end of buffer has been reached.
 //
-   if (*buff == '\0') return (char *)NULL;
+   if (!buff || *buff == '\0') return (char *)NULL;
 
 // Find the next record in the buffer
 //

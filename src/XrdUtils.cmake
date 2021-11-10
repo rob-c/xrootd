@@ -100,6 +100,7 @@ add_library(
   XrdOuc/XrdOucCRC.cc           XrdOuc/XrdOucCRC.hh
   XrdOuc/XrdOucCRC32C.cc        XrdOuc/XrdOucCRC32C.hh
   XrdOuc/XrdOucEnv.cc           XrdOuc/XrdOucEnv.hh
+  XrdOuc/XrdOucGatherConf.cc    XrdOuc/XrdOucGatherConf.hh
                                 XrdOuc/XrdOucHash.hh
                                 XrdOuc/XrdOucHash.icc
   XrdOuc/XrdOucERoute.cc        XrdOuc/XrdOucERoute.hh
