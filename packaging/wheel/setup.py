@@ -30,6 +30,51 @@ def binary_exists(name):
     from distutils.spawn import find_executable
     return find_executable(name) is not None
 
+def check_cmake3(path):
+    from distutils.spawn import find_executable
+    args = (path, "--version")
+    popen = subprocess.Popen(args, stdout=subprocess.PIPE)
+    popen.wait()
+    output = popen.stdout.read().decode("utf-8") 
+    prefix_len = len( "cmake version " )
+    version = output[prefix_len:].split( '.' )
+    return int( version[0] ) >= 3
+
+def cmake_exists():
+    """Check whether CMAKE is on PATH."""
+    from distutils.spawn import find_executable
+    path = find_executable('cmake')
+    if path is not None:
+        if check_cmake3(path): return True, path
+    path = find_executable('cmake3')
+    return path is not None, path 
+
+def is_rhel7():
+    """check if we are running on rhel7 platform"""
+    try:
+      f = open( '/etc/redhat-release', "r" )
+      txt = f.read().split()
+      i = txt.index( 'release' ) + 1
+      return txt[i][0] == '7'
+    except IOError:
+      return False
+    except ValueError:
+      return False
+
+def has_devtoolset():
+    """check if devtoolset-7 is installed"""
+    import subprocess
+    args = ( "/usr/bin/rpm", "-q", "devtoolset-7-gcc-c++" )
+    popen = subprocess.Popen(args, stdout=subprocess.PIPE)
+    rc = popen.wait()
+    return rc == 0
+
+def has_cxx14():
+    """check if C++ compiler supports C++14"""
+    import subprocess
+    popen = subprocess.Popen("./has_c++14.sh", stdout=subprocess.PIPE)
+    rc = popen.wait()
+    return rc == 0
 
 # def python_dependency_name( py_version_short, py_version_nodot ):
 #     """ find the name of python dependency """
@@ -52,14 +97,17 @@ class CustomInstall(install):
         py_version_short = self.config_vars['py_version_short']
         py_version_nodot = self.config_vars['py_version_nodot']
 
-        cmake_bin   = binary_exists( 'cmake' )
+        cmake_bin, cmake_path = cmake_exists()
         make_bin    = binary_exists( 'make' )
         comp_bin    = binary_exists( 'c++' ) or binary_exists( 'g++' ) or binary_exists( 'clang' )
 
         import pkgconfig
-        zlib_dev    = pkgconfig.exists( 'zlib' )
-        openssl_dev = pkgconfig.exists( 'openssl' )
-        uuid_dev    = pkgconfig.exists( 'uuid' )
+        zlib_dev     = pkgconfig.exists( 'zlib' )
+        openssl_dev  = pkgconfig.exists( 'openssl' )
+        uuid_dev     = pkgconfig.exists( 'uuid' )
+
+        devtoolset7 = True # This is XRootD4 we don't use C++14 yet
+        need_devtoolset = "false"
         
         pyname = None
         if py_version_nodot[0] == '3':
@@ -69,17 +117,18 @@ class CustomInstall(install):
             python_dev = pkgconfig.exists( 'python' );
             pyname = 'python'
 
-        missing_dep = not ( cmake_bin and make_bin and comp_bin and zlib_dev and openssl_dev and python_dev and uuid_dev )
+        missing_dep = not ( cmake_bin and make_bin and comp_bin and zlib_dev and openssl_dev and python_dev and uuid_dev and devtoolset7 )
 
         if missing_dep:
           print( 'Some dependencies are missing:')
-          if not cmake_bin:   print('\tcmake is missing!')
-          if not make_bin:    print('\tmake is missing!')
-          if not comp_bin:    print('\tC++ compiler is missing (g++, c++, clang, etc.)!')
-          if not zlib_dev:    print('\tzlib development package is missing!')
-          if not openssl_dev: print('\topenssl development package is missing!')
-          if not python_dev:  print('\t{} development package is missing!'.format(pyname) )
-          if not uuid_dev:    print('\tuuid development package is missing')
+          if not cmake_bin:    print('\tcmake (version 3) is missing!')
+          if not make_bin:     print('\tmake is missing!')
+          if not comp_bin:     print('\tC++ compiler is missing (g++, c++, clang, etc.)!')
+          if not zlib_dev:     print('\tzlib development package is missing!')
+          if not openssl_dev:  print('\topenssl development package is missing!')
+          if not python_dev:   print('\t{} development package is missing!'.format(pyname) )
+          if not uuid_dev:     print('\tuuid development package is missing')
+          if not devtoolset7:  print('\tdevtoolset-7-gcc-c++ package is missing')
           raise Exception( 'Dependencies missing!' )
 
         useropt = ''
@@ -92,6 +141,9 @@ class CustomInstall(install):
         command.append(prefix)
         command.append( py_version_short )
         command.append( useropt )
+        command.append( cmake_path )
+        command.append( need_devtoolset )
+        command.append( sys.executable )
         rc = subprocess.call(command)
         if rc:
           raise Exception( 'Install step failed!' )
@@ -114,11 +166,7 @@ class CustomWheelGen(bdist_wheel):
     def run(self):
         pass
 
-
-version = get_version()
-if version.startswith('unknown'):
-    version = get_version_from_file()
-
+version = get_version_from_file()
 setup_requires=[ 'pkgconfig' ]
 
 setup( 
@@ -132,8 +180,8 @@ setup(
     long_description = "XRootD with Python bindings",
     setup_requires   = setup_requires,
     cmdclass         = {
-        'install': CustomInstall,
-        'sdist': CustomDist,
+        'install':     CustomInstall,
+        'sdist':       CustomDist,
         'bdist_wheel': CustomWheelGen
     }
 )
