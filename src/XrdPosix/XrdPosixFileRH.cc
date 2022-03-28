@@ -40,6 +40,7 @@
 #include "XrdPosix/XrdPosixFileRH.hh"
 #include "XrdPosix/XrdPosixFile.hh"
 #include "XrdPosix/XrdPosixMap.hh"
+#include "XrdPosix/XrdPosixTrace.hh"
 
 /******************************************************************************/
 /*                        S t a t i c   M e m b e r s                         */
@@ -104,6 +105,11 @@ XrdPosixFileRH *XrdPosixFileRH::Alloc(XrdOucCacheIOCB *cbp,
 /******************************************************************************/
 /*                        H a n d l e R e s p o n s e                         */
 /******************************************************************************/
+
+namespace
+{
+const char *ioName[] {"nonIO","Read","ReadV","Write","ReadP","WriteP"};
+}
   
 void XrdPosixFileRH::HandleResponse(XrdCl::XRootDStatus *status,
                                     XrdCl::AnyObject    *response)
@@ -138,7 +144,13 @@ void XrdPosixFileRH::HandleResponse(XrdCl::XRootDStatus *status,
                             }
                     csVec = 0;
                    }
-                if (csfix) *csfix = pInfo->GetNbRepair();
+                if (csfix)
+                   {*csfix = pInfo->GetNbRepair();
+                    if (*csfix) DMSG("PosixRH", "csfix="<<*csfix<<" rslt="
+                                     <<result<<" req="<<ioName[typeIO]<<'@'
+                                     <<offset<<" fn="<<theFile->Path()
+                                     <<" orgn="<<theFile->Origin());
+                   }
                } else {
                 result = 0;
                 if (csVec) {csVec->clear(); csVec = 0;}

@@ -22,6 +22,8 @@
 // or submit itself to any jurisdiction.
 //------------------------------------------------------------------------------
 
+#include <iostream>
+
 #include "XrdCl/XrdClFileStateHandler.hh"
 #include "XrdCl/XrdClURL.hh"
 #include "XrdCl/XrdClLog.hh"
@@ -104,7 +106,12 @@ namespace
           else
           {
             delete status; // by convention other args are null (see PgReadRetryHandler)
+            int nbrsave = nbrepair;
             ++nbrepair;    // update number of repaired pages
+            const char *url = stateHandler->pFileUrl->GetURL().c_str();
+            std::cerr<<"XrdClFileStateHandler: updt cserrcnt from "<<nbrsave
+                     <<" to "<<nbrepair<<" URL="<<url
+                     <<"\n"<<std::flush;
           }
 
           if( retrycnt == 0 )
@@ -116,6 +123,10 @@ namespace
             {
               PageInfo &pginf = XrdCl::To<PageInfo>( *resp );
               pginf.SetNbRepair( nbrepair );
+              const char *url = stateHandler->pFileUrl->GetURL().c_str();
+              std::cerr<<"XrdClFileStateHandler: set  cserrcnt to "<<nbrepair
+                       <<" URL="<<url
+                       <<"\n"<<std::flush;
               userHandler->HandleResponseWithHosts( st.release(), resp.release(), hosts.release() );
             }
             else
