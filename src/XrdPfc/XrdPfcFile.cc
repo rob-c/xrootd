@@ -584,8 +584,15 @@ void File::ProcessBlockRequest(Block *b)
    BlockResponseHandler* oucCB = new BlockResponseHandler(b);
    if (b->req_cksum_net())
    {
+      int cserrs = b->get_n_cksum_errors();
       b->get_io()->GetInput()->pgRead(*oucCB, b->get_buff(), b->get_offset(), b->get_req_size(),
                                       b->ref_cksum_vec(), 0, b->ptr_n_cksum_errors());
+      int csenow = b->get_n_cksum_errors();
+      if (cserrs != csenow)
+         {const char *url = b->get_io()->GetInput()->Path();
+          SYSTRACE(XRD_TRACE, 0, "PBReq", 0, "cserrcnt changed from "<<cserrs
+                   <<" to "<<csenow<<" url="<<url);
+         }
    } else {
       b->get_io()->GetInput()->  Read(*oucCB, b->get_buff(), b->get_offset(), b->get_size());
    }
@@ -1230,6 +1237,10 @@ void File::ProcessBlockResponse(BlockResponseHandler* brh, int res)
       if ( ! m_in_shutdown)
       {
          inc_ref_count(b);
+         if (b->get_n_cksum_errors())
+            {SYSTRACE(XRD_TRACE, 0, "PBRsp", 0, "AddWriteStats cserrs= "
+                      <<b->get_n_cksum_errors()<<" url="<<m_filename);
+            }
          m_stats.AddWriteStats(b->get_size(), b->get_n_cksum_errors());
          cache()->AddWriteTask(b, true);
       }

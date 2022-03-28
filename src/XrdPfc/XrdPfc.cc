@@ -650,6 +650,8 @@ void Cache::dec_ref_cnt(File* f, bool high_debug)
                                  f->GetRemoteLocations().c_str(),
                                  as->BytesHit, as->BytesMissed, as->BytesBypassed, st.m_NCksumErrors
             );
+            SYSTRACE(XRD_TRACE, 0, "Add2GS", 0, "cserror="<<st.m_NCksumErrors
+                     <<" urls="<<f->GetRemoteLocations().c_str());
             bool suc = false;
             if (len < 4096)
             {
