@@ -45,6 +45,7 @@
 #include "XrdCl/XrdClEcHandler.hh"
 #endif
 
+#include "XrdOuc/XrdOucBackTrace.hh"
 #include "XrdOuc/XrdOucCRC.hh"
 #include "XrdOuc/XrdOucPgrwUtils.hh"
 
@@ -109,9 +110,11 @@ namespace
             int nbrsave = nbrepair;
             ++nbrepair;    // update number of repaired pages
             const char *url = stateHandler->pFileUrl->GetURL().c_str();
-            std::cerr<<"XrdClFileStateHandler: updt cserrcnt from "<<nbrsave
+            std::cerr<<"ClFileStateHandler "<<(void*)this
+                     <<": updt cserrcnt from "<<nbrsave
                      <<" to "<<nbrepair<<" URL="<<url
                      <<"\n"<<std::flush;
+            XrdOucBackTrace::DoBT("ClFileStateHandler:",(void *)this,0,"updt");
           }
 
           if( retrycnt == 0 )
@@ -124,10 +127,11 @@ namespace
               PageInfo &pginf = XrdCl::To<PageInfo>( *resp );
               pginf.SetNbRepair( nbrepair );
               const char *url = stateHandler->pFileUrl->GetURL().c_str();
-              std::cerr<<"XrdClFileStateHandler: set  cserrcnt to "<<nbrepair
+              std::cerr<<"ClFileStateHandler: set  cserrcnt to "<<nbrepair
                        <<" URL="<<url
                        <<"\n"<<std::flush;
               userHandler->HandleResponseWithHosts( st.release(), resp.release(), hosts.release() );
+              XrdOucBackTrace::DoBT("ClFileStateHandler:",(void *)this,0,"set");
             }
             else
               userHandler->HandleResponseWithHosts( st.release(), 0, 0 );
