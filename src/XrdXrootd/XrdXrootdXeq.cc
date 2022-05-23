@@ -32,6 +32,9 @@
 #include <string>
 #include <sys/time.h>
 
+#include <sstream>
+#include <iostream>
+
 #include "XrdSfs/XrdSfsInterface.hh"
 #include "XrdSfs/XrdSfsFlags.hh"
 #include "XrdSys/XrdSysError.hh"
@@ -2632,6 +2635,21 @@ int XrdXrootdProtocol::do_ReadV()
                {xfrSZ = IO.File->XrdSfsp->readv(&rdVec[rdVNow], i-rdVNow);
                 if (xfrSZ != rdVAmt) break;
                }
+
+            std::stringstream ss;
+            int size = Quantum-Qleft;
+            char *rspbuff = (char*)argp->buff;
+            while ( size > 0 )
+            {
+              readahead_list *rdvhdr = (readahead_list*)rspbuff;
+              uint64_t off = ntohll( rdvhdr->offset );
+              uint32_t len = ntohl( rdvhdr->rlen );
+              ss << "[readv] oksofar: offset = " << off << " length = " << len << '\n';
+              size -= len + 16;
+              rspbuff += len + 16;
+            }
+            TRACEP( FSIO, ss.str().c_str() );
+
             if (Response.Send(kXR_oksofar,argp->buff,Quantum-Qleft) < 0)
                return -1;
             Qleft = Quantum;
@@ -2660,6 +2678,21 @@ int XrdXrootdProtocol::do_ReadV()
 
 // All done, return result of the last segment or just zero
 //
+
+   std::stringstream ss;
+   int size = Quantum-Qleft;
+   char *rspbuff = (char*)argp->buff;
+   while ( size > 0 )
+   {
+     readahead_list *rdvhdr = (readahead_list*)rspbuff;
+     uint64_t off = ntohll( rdvhdr->offset );
+     uint32_t len = ntohl( rdvhdr->rlen );
+     ss << "[readv] ok: offset = " << off << " length = " << len << '\n';
+     size -= len + 16;
+     rspbuff += len + 16;
+   }
+   TRACEP( FSIO, ss.str().c_str() );
+
    return (Quantum != Qleft ? Response.Send(argp->buff, Quantum-Qleft) : 0);
 }
 
