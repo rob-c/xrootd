@@ -80,6 +80,11 @@ namespace XrdCl
       filesize = cdfh->extra->compressedSize;
     uint16_t descsize = cdfh->HasDataDescriptor() ?
                         DataDescriptor::GetSize( cdfh->IsZIP64() ) : 0;
+
+    if(filesize+descsize > nextRecordOffset)
+        	return XRootDStatus( stError, errInvalidArgs,
+        			errInvalidArgs, "Resulting offset of read smaller than zero." );
+
     uint64_t fileoff  = nextRecordOffset - filesize - descsize;
     uint64_t offset   = fileoff + relativeOffset;
     uint64_t uncompressedSize = cdfh->uncompressedSize;
@@ -440,9 +445,11 @@ namespace XrdCl
                                         log->Dump( ZipMsg, "[0x%x] CD records parsed.", this );
 										uint64_t sumCompSize = 0;
 										for (auto it = cdvec.begin(); it != cdvec.end(); it++) {
-											sumCompSize += (*it)->compressedSize;
-											if ((*it)->offset > archsize || (*it)->offset + (*it)->compressedSize > archsize)
+											if ((*it)->offset > archsize || (*it)->offset + (*it)->compressedSize > archsize
+													|| (*it)->offset < sumCompSize)
 												throw bad_data();
+
+											sumCompSize += (*it)->compressedSize;
 										}
 										if (sumCompSize > archsize)
 											throw bad_data();

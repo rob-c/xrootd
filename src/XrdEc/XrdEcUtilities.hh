@@ -246,14 +246,22 @@ namespace XrdEc
   };
 
   //---------------------------------------------------------------------------
-  // Extract the block ID from the chunk file name
+  // Extract the block ID from the chunk file name, throws invalid_argument if unsuccessful
   //---------------------------------------------------------------------------
   inline static size_t fntoblk( const std::string &fn )
   {
+	  try{
     size_t end = fn.rfind( '.' );
     size_t begin = fn.rfind( '.', end - 1 ) + 1;
     size_t len = end - begin;
     return std::stoul( fn.substr( begin,  len ) );
+	  }
+	  catch(std::invalid_argument &e){
+		  throw std::invalid_argument("File name doesn't fit pattern");
+	  }
+	  catch(std::out_of_range &e){
+	  	  throw std::out_of_range("File name results in out of range block id");
+	  }
   }
 }
 

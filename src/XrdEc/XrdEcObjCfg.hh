@@ -17,6 +17,7 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <chrono>
 
 namespace XrdEc
 {
@@ -46,6 +47,7 @@ namespace XrdEc
         nomtfile( nomtfile )
       {
         digest = usecrc32c ? crc32c : isal_crc32;
+        seed = std::chrono::system_clock::now().time_since_epoch().count();
       }
 
       ObjCfg( const ObjCfg &objcfg ) : obj( objcfg.obj ),
@@ -57,16 +59,25 @@ namespace XrdEc
                                        paritysize( objcfg.paritysize ),
                                        blksize( objcfg.blksize ),
                                        plgr( objcfg.plgr ),
+									   plgrReplace(objcfg.plgrReplace),
                                        digest( objcfg.digest ),
-                                       nomtfile( objcfg.nomtfile )
+                                       nomtfile( objcfg.nomtfile ),
+									   seed( objcfg.seed )
       {
       }
 
       inline std::string GetDataUrl( size_t i ) const
       {
         std::string url = plgr[i] + '/' + obj;
-        if( !dtacgi.empty() ) url += '?' + dtacgi[i];
+        if( !dtacgi.empty() && dtacgi.size() > i ) url += '?' + dtacgi[i];
         return url;
+      }
+
+      inline std::string GetReplacementUrl(size_t i)const
+      {
+    	  std::string url = plgrReplace[i] + '/' + obj;
+    	  if( !dtacgi.empty()) url += '?' + dtacgi[i];
+    	  return url;
       }
 
       inline std::string GetMetadataUrl( size_t i ) const
@@ -90,12 +101,15 @@ namespace XrdEc
       const uint64_t    paritysize; // size of the parity in the block
       const uint64_t    blksize;    // the whole block size (data + parity) in MB
       std::vector<std::string> plgr;
+      std::vector<std::string> plgrReplace;
       std::vector<std::string> dtacgi;
       std::vector<std::string> mdtacgi;
 
       uint32_t (*digest)(uint32_t, void const*, size_t);
 
       bool nomtfile;
+
+      uint64_t seed; // the seed used for e.g. server shuffling, default set to current time
   };
 }
 

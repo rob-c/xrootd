@@ -49,7 +49,7 @@ namespace XrdZip
     }
 
     //-------------------------------------------------------------------------
-    //! Constructor from buffer
+    //! Constructor from buffer (optional argument buffer length)
     //-------------------------------------------------------------------------
     EOCD( const char *buffer, uint32_t maxSize = 0 )
     {
