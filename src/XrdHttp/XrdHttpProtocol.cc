@@ -280,6 +280,7 @@ XrdProtocol *XrdHttpProtocol::Match(XrdLink *lp) {
   // we should just use the link's TLS native implementation.
   //
   XrdNetAddr *netP = const_cast<XrdNetAddr*>(lp->NetAddr());
+  SecEntity.addrInfo = lp->AddrInfo();
   netP->SetDialect("https");
   netP->SetTLS(true);
 
