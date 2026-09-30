@@ -43,7 +43,7 @@
 #define  TRACE_IDENT pInfo.Link.ID
 #include "Xrd/XrdTrace.hh"
 
-#if defined( __linux__ )
+#if defined( __linux__ ) && !defined(XRD_SERVER_FORCE_POLL)
 #include "Xrd/XrdPollE.hh"
 //#include "Xrd/XrdPollPoll.hh"
 #else
@@ -421,7 +421,7 @@ int XrdPoll::Stats(char *buff, int blen, int do_sync)
 /*              I m p l e m e n t a t i o n   S p e c i f i c s               */
 /******************************************************************************/
 
-#if defined( __linux__ )
+#if defined( __linux__ ) && !defined(XRD_SERVER_FORCE_POLL)
 #include "Xrd/XrdPollE.icc"
 //#include "Xrd/XrdPollPoll.icc"
 #else

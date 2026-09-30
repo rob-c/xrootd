@@ -753,7 +753,7 @@ bool XrdSys::IOEvents::Poller::CbkXeq(XrdSys::IOEvents::Channel *cP, int events,
         if (!cbok) Detach(cP,isLocked,fatal);
    else if ((isRead || isWrite) && !(cP->inTOQ) && (cP->chRTO || cP->chWTO))
            TmoAdd(cP, 0);
-#if defined(__sun)
+#if defined(__sun) || defined(XRD_SYS_IOEVENTS_FORCE_PORT_REARM)
    if (cbok) Modify(cP,eNum,&eTxt,isLocked);
 #endif
 
@@ -1248,7 +1248,7 @@ void XrdSys::IOEvents::Poller::WakeUp()
 
 #if defined( __solaris__ )  
 #include "XrdSys/XrdSysIOEventsPollPort.icc"
-#elif defined( __linux__ )
+#elif defined( __linux__ ) && !defined(XRD_SYS_IOEVENTS_FORCE_POLL)
 #include "XrdSys/XrdSysIOEventsPollE.icc"
 #elif defined(__APPLE__)
 #include "XrdSys/XrdSysIOEventsPollKQ.icc"

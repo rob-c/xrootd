@@ -429,9 +429,8 @@ namespace XrdCl
       }
 
       //------------------------------------------------------------------------
-      //! Bookkeeping after partial response has been received:
-      //! - take down the timeout fence after oksofar response has been handled
-      //! - reset status-response-body marshaled flag
+      //! Bookkeeping after a synchronous frame completes: take down the
+      //! timeout fence which protected its borrowed handler pointer.
       //------------------------------------------------------------------------
       void PartialReceived();
 
