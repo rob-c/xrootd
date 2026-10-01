@@ -34,6 +34,7 @@
 #include <unistd.h>
 #ifdef __linux__
 #include <sys/eventfd.h>
+#include <dlfcn.h>
 #endif
 
 #ifdef __linux__
@@ -117,6 +118,15 @@ private:
   std::function<void()> action;
 };
 
+class MutexAccess : public XrdSysMutex
+{
+public:
+  static pthread_mutex_t *Native(XrdSysMutex &mutex)
+  {
+    return &reinterpret_cast<MutexAccess &>(mutex).cs;
+  }
+};
+
 class LockableLink : public XrdLinkXeq
 {
 public:
@@ -126,6 +136,7 @@ public:
   void SetInstance(unsigned int value) { Instance = value; }
   unsigned int GetInstance() const { return Instance; }
   void KeepDescriptor() { KeepFD = true; }
+  pthread_mutex_t *OperationMutex() { return MutexAccess::Native(LinkInfo.opMutex); }
 };
 
 XrdSysSemaphore *closeTraceEntered = nullptr;
@@ -217,10 +228,73 @@ struct LinkPublishWait
   XrdSysSemaphore entered{0}, release{0};
 };
 thread_local LinkPublishWait *linkPublishWait = nullptr;
+
+std::atomic<bool> pauseActivityPost{false}, activityPostPaused{false};
+std::atomic<bool> releaseActivityPost{false}, activityWaiterDestroyed{false};
+std::atomic<bool> closerLockAttempted{false};
+std::atomic<pthread_t> activityPoster{}, activityCloser{};
+std::atomic<pthread_mutex_t *> activityOpMutex{nullptr};
+std::atomic<sem_t *> activitySemaphore{nullptr};
 #endif
 }
 
 #ifdef __linux__
+namespace {
+using MutexLock = int (*)(pthread_mutex_t *);
+using SemPost = int (*)(sem_t *);
+using SemDestroy = int (*)(sem_t *);
+
+MutexLock RealMutexLock()
+{
+  static auto call = reinterpret_cast<MutexLock>(
+    dlsym(RTLD_NEXT, "pthread_mutex_lock"));
+  return call;
+}
+
+SemPost RealSemPost()
+{
+  static auto call = reinterpret_cast<SemPost>(dlsym(RTLD_NEXT, "sem_post"));
+  return call;
+}
+
+SemDestroy RealSemDestroy()
+{
+  static auto call = reinterpret_cast<SemDestroy>(
+    dlsym(RTLD_NEXT, "sem_destroy"));
+  return call;
+}
+}
+
+extern "C" int pthread_mutex_lock(pthread_mutex_t *mutex) noexcept
+{
+  if (mutex == activityOpMutex.load(std::memory_order_acquire)
+      && pthread_equal(pthread_self(), activityCloser.load()))
+    closerLockAttempted.store(true, std::memory_order_release);
+  return RealMutexLock()(mutex);
+}
+
+extern "C" int sem_post(sem_t *semaphore) noexcept
+{
+  const int result = RealSemPost()(semaphore);
+  if (pauseActivityPost.load(std::memory_order_acquire)
+      && pthread_equal(pthread_self(), activityPoster.load()))
+  {
+    activitySemaphore.store(semaphore, std::memory_order_release);
+    activityPostPaused.store(true, std::memory_order_release);
+    while (!releaseActivityPost.load(std::memory_order_acquire))
+      sched_yield();
+  }
+  return result;
+}
+
+extern "C" int sem_destroy(sem_t *semaphore) noexcept
+{
+  if (activityPostPaused.load(std::memory_order_acquire)
+      && semaphore == activitySemaphore.load(std::memory_order_acquire))
+    activityWaiterDestroyed.store(true, std::memory_order_release);
+  return RealSemDestroy()(semaphore);
+}
+
 // ELF executable interposition pauses the existing timer wait before its actual
 // condition wait. No clock, queue entry, return value or production code is
 // mocked. With upstream the signal happens during this pause and is lost;
@@ -1496,6 +1570,68 @@ const void *ActivityWaitHead(XrdLink *link)
   return ActivityWaitHead((XrdLinkXeq *)link, link, 0);
 }
 }
+
+#ifdef __linux__
+// User: one server worker finishes a request while another thread closes the
+// same connection. The close waiter must remain alive until the worker has
+// completely returned from waking it. Branch regression: the first #2965
+// revision destroys the stack semaphore while sem_post is still in progress;
+// this bootstraps the corrected waiter lifetime rather than a stock failure.
+TEST(ServerLoops, ActivityWaiterOutlivesThePostingCall)
+{
+  FINISH_WITHIN(5,
+    class AtomicProtocol : public ReadingProtocol
+    {
+    public:
+      int Process(XrdLink *) override
+      {
+        worker.store(pthread_self(), std::memory_order_release);
+        entered.store(true, std::memory_order_release);
+        while (!release.load(std::memory_order_acquire)) sched_yield();
+        return -EINPROGRESS;
+      }
+      std::atomic<bool> entered{false}, release{false};
+      std::atomic<pthread_t> worker{};
+    } protocol;
+
+    LockableLink link;
+    link.SetInstance(29);
+    link.LinkInfo.InUse = 1;
+    link.LinkInfo.FD = link.PollInfo.FD = -1;
+    link.setProtocol(&protocol, false);
+
+    activityPostPaused.store(false);
+    releaseActivityPost.store(false);
+    activityWaiterDestroyed.store(false);
+    closerLockAttempted.store(false);
+    activitySemaphore.store(nullptr);
+    activityOpMutex.store(nullptr);
+    pauseActivityPost.store(false);
+
+    std::thread running([&] { RunNested(&link, 29, 0); });
+    while (!protocol.entered.load(std::memory_order_acquire)) sched_yield();
+
+    std::thread closer([&] {
+      activityCloser.store(pthread_self(), std::memory_order_release);
+      link.Close();
+    });
+    while (ActivityWaitHead((XrdLink *)&link) == nullptr) sched_yield();
+
+    activityPoster.store(protocol.worker.load(std::memory_order_acquire));
+    activityOpMutex.store(link.OperationMutex(), std::memory_order_release);
+    pauseActivityPost.store(true, std::memory_order_release);
+    protocol.release.store(true, std::memory_order_release);
+
+    while (!activityPostPaused.load(std::memory_order_acquire)) sched_yield();
+    while (!closerLockAttempted.load(std::memory_order_acquire)) sched_yield();
+    REQUIRE(!activityWaiterDestroyed.load(std::memory_order_acquire));
+
+    releaseActivityPost.store(true, std::memory_order_release);
+    running.join();
+    closer.join();
+  );
+}
+#endif
 
 // User: two scheduler workers overlap on one connection and one reports a
 // fatal protocol error. While final close waits for the other worker, another

@@ -15,3 +15,14 @@ target_link_libraries(xrdxrootd-redir-helper-tests
 
 gtest_discover_tests(xrdxrootd-redir-helper-tests
     PROPERTIES DISCOVERY_TIMEOUT 10)
+
+add_executable(xrdxrootd-parallel-close-tests XrdXrootdParallelCloseTests.cc)
+
+target_link_libraries(xrdxrootd-parallel-close-tests
+    XrdServer
+    XrdUtils
+    GTest::gtest
+    GTest::gtest_main)
+
+gtest_discover_tests(xrdxrootd-parallel-close-tests
+    PROPERTIES DISCOVERY_TIMEOUT 10 TIMEOUT 10)
