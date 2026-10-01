@@ -1497,6 +1497,59 @@ const void *ActivityWaitHead(XrdLink *link)
 }
 }
 
+// User: two scheduler workers overlap on one connection and one reports a
+// fatal protocol error. While final close waits for the other worker, another
+// queued readiness job must not enter the protocol and prolong retirement.
+// Branch regression: the first #2965 revision leaves closePending clear and
+// admits the third dispatch; this bootstraps the fatal-retirement fence fix.
+TEST(ServerLoops, FatalResultFencesDispatchBeforeWaitingForActivity)
+{
+  FINISH_WITHIN(5,
+    class OverlappingFatalProtocol : public ReadingProtocol
+    {
+    public:
+      int Process(XrdLink *) override
+      {
+        const int call = ++processCount;
+        if (call == 1)
+        {
+          firstEntered.Post();
+          releaseFirst.Wait();
+          return 1;
+        }
+        return call == 2 ? -1 : -EINPROGRESS;
+      }
+      std::atomic<int> processCount{0};
+      XrdSysSemaphore firstEntered{0}, releaseFirst{0};
+    } protocol;
+
+    LockableLink link;
+    link.SetInstance(17);
+    link.LinkInfo.InUse = 1;
+    link.LinkInfo.FD = link.PollInfo.FD = -1;
+    link.setProtocol(&protocol, false);
+
+    std::thread running([&] { RunNested(&link, 17, 0); });
+    protocol.firstEntered.Wait();
+    std::atomic<bool> fatalDone{false};
+    std::thread fatal([&] {
+      RunNested(&link, 17, 0);
+      fatalDone.store(true, std::memory_order_release);
+    });
+    while (!fatalDone.load(std::memory_order_acquire)
+           && ActivityWaitHead((XrdLink *)&link) == nullptr)
+      std::this_thread::yield();
+
+    RunNested(&link, 17, 0);
+    REQUIRE(protocol.processCount == 2);
+
+    protocol.releaseFirst.Post();
+    running.join();
+    fatal.join();
+    REQUIRE(protocol.recycleCount == 1);
+  );
+}
+
 // User: fatal cleanup is scheduled while a protocol is still handling an
 // earlier readable request. Its close callback may serialize link work, but
 // final cleanup must not recycle the running protocol after that callback.
