@@ -10,8 +10,11 @@
 #undef private
 
 #include <gtest/gtest.h>
+#include <atomic>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -69,6 +72,16 @@ public:
   int Use() const {return LinkInfo.InUse;}
 };
 
+template<class Protocol>
+auto RetainOffloadLink(Protocol *protocol, XrdLink *link, int)
+  -> decltype(protocol->offloadLink = link, void())
+{
+  protocol->offloadLink = link;
+}
+
+template<class Protocol>
+void RetainOffloadLink(Protocol *, XrdLink *, long) {}
+
 }
 
 // User: a client loses a bound parallel data connection after its offload was
@@ -80,7 +93,6 @@ public:
 TEST(XrdXrootdParallelClose, QueuedOffloadIsCancelledDuringBoundRecycle)
 {
   FINISH_WITHIN(5,
-    auto *parent = new XrdXrootdProtocol;
     auto *bound = new XrdXrootdProtocol;
     auto *parentLink = new TestLink;
     auto *boundLink = new TestLink;
@@ -90,10 +102,11 @@ TEST(XrdXrootdParallelClose, QueuedOffloadIsCancelledDuringBoundRecycle)
     XrdSysSemaphore retry(0);
 
     parentLink->SetUse(2);
-    parent->Link = parentLink;
     bound->Link = boundLink;
     bound->Status = XRD_BOUNDPATH;
-    bound->Stream[0] = parent;
+    // Parent Cleanup clears Stream[0] before requesting the bound close.
+    bound->Stream[0] = nullptr;
+    RetainOffloadLink(bound, parentLink, 0);
     bound->boundRecycle = recycled;
     bound->IO.File = file;
     bound->isActive = true;
@@ -110,5 +123,124 @@ TEST(XrdXrootdParallelClose, QueuedOffloadIsCancelledDuringBoundRecycle)
     REQUIRE(recycled->CondWait());
     REQUIRE(parentLink->Use() == 1);
     file->Serialize();
+  );
+}
+
+// User: a bound connection closes while its worker is inside filesystem I/O.
+// Recycle must wait for that worker instead of entering do_OffloadIO a second
+// time and releasing its file and control-link references twice. Branch
+// regression: revision 2d7329935 treats every active operation as cancellable;
+// this bootstraps the queued-versus-running distinction added afterwards.
+TEST(XrdXrootdParallelClose, RunningOffloadFinishesBeforeBoundRecycle)
+{
+  FINISH_WITHIN(5,
+    auto *bound = new XrdXrootdProtocol;
+    auto *boundLink = new TestLink;
+    auto *recycled = new XrdSysSemaphore(0);
+
+    bound->Link = boundLink;
+    bound->Status = XRD_BOUNDPATH;
+    bound->boundRecycle = recycled;
+    bound->isActive = true;
+    bound->isLinkWT = false;
+    bound->newPio = false;
+
+    XrdXrootd::eLog.setMsgMask(0);
+    std::atomic<bool> recycleDone{false};
+    std::thread recycler([&] {
+      bound->Recycle(boundLink, 0, "test close");
+      recycleDone.store(true, std::memory_order_release);
+    });
+
+    for (;;)
+    {
+      bound->streamMutex.Lock();
+      const bool waiting = bound->endNote != nullptr;
+      bound->streamMutex.UnLock();
+      if (waiting) break;
+      std::this_thread::yield();
+    }
+    REQUIRE(!recycleDone.load(std::memory_order_acquire));
+
+    bound->streamMutex.Lock();
+    bound->isActive = false;
+    bound->endNote->Signal();
+    bound->streamMutex.UnLock();
+    recycler.join();
+
+    REQUIRE(recycleDone.load(std::memory_order_acquire));
+    REQUIRE(recycled->CondWait());
+  );
+}
+
+// User: bound-stream close races the short interval in which an offload has
+// claimed the stream but has not yet retained its file and control link.
+// Recycle must wait until those references are published before cancelling.
+// Branch regression: revision 2d7329935 cancels immediately and can release
+// references which the request thread has not acquired yet.
+TEST(XrdXrootdParallelClose, OffloadSetupCompletesBeforeCancellation)
+{
+  FINISH_WITHIN(5,
+    auto *bound = new XrdXrootdProtocol;
+    auto *parentLink = new TestLink;
+    auto *boundLink = new TestLink;
+    auto *file = new XrdXrootdFile("test", "/offload-test",
+                                  new TestSfsFile);
+    auto *recycled = new XrdSysSemaphore(0);
+    XrdSysSemaphore retry(0);
+
+    parentLink->SetUse(1);
+    bound->Link = boundLink;
+    bound->Status = XRD_BOUNDPATH;
+    bound->boundRecycle = recycled;
+    bound->IO.File = file;
+    bound->isActive = true;
+    bound->isLinkWT = false;
+    bound->newPio = false;
+    bound->reTry = &retry;
+    RetainOffloadLink(bound, parentLink, 0);
+
+    XrdXrootd::eLog.setMsgMask(0);
+    std::thread recycler([&] { bound->Recycle(boundLink, 0, "test close"); });
+
+    for (;;)
+    {
+      bound->streamMutex.Lock();
+      const bool waiting = bound->endNote != nullptr;
+      bound->streamMutex.UnLock();
+      if (waiting) break;
+      std::this_thread::yield();
+    }
+
+    parentLink->SetUse(2);
+    file->Ref(1);
+    bound->streamMutex.Lock();
+    bound->newPio = true;
+    bound->endNote->Signal();
+    bound->streamMutex.UnLock();
+    recycler.join();
+
+    REQUIRE(!bound->isActive);
+    REQUIRE(retry.CondWait());
+    REQUIRE(recycled->CondWait());
+    REQUIRE(parentLink->Use() == 1);
+    file->Serialize();
+  );
+}
+
+// User: close begins just as the scheduled offload worker enters filesystem
+// I/O. A second dispatch must observe that the first owns the operation and
+// return without touching its file or link references. Branch regression:
+// revision 2d7329935 enters the handler twice for this state.
+TEST(XrdXrootdParallelClose, RunningOffloadRejectsSecondDispatcher)
+{
+  FINISH_WITHIN(5,
+    auto *bound = new XrdXrootdProtocol;
+    bound->isActive = true;
+    bound->isLinkWT = false;
+    bound->newPio = false;
+
+    REQUIRE(bound->do_OffloadIO() == -EINPROGRESS);
+    REQUIRE(bound->isActive);
   );
 }
