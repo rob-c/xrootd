@@ -1,6 +1,7 @@
 // Progress regressions with controlled thread order, never fabricated wire data.
 #include "XrdSys/XrdSysPthread.hh"
 #include "Xrd/XrdPoll.hh"
+#include "Xrd/XrdTrace.hh"
 // Observe existing queue/fence state without adding test APIs to production.
 #define private public
 #include "Xrd/XrdScheduler.hh"
@@ -126,6 +127,18 @@ public:
   unsigned int GetInstance() const { return Instance; }
   void KeepDescriptor() { KeepFD = true; }
 };
+
+XrdSysSemaphore *closeTraceEntered = nullptr;
+XrdSysSemaphore *closeTraceRelease = nullptr;
+
+void PauseDeferredCloseTrace(const char *, const char *message, bool)
+{
+  if (!message || !std::strstr(message, " deferred, use count=")) return;
+  closeTraceEntered->Post();
+  closeTraceRelease->Wait();
+}
+
+int SerializationWaiters(XrdLink *link);
 
 [[maybe_unused]] bool IsEnabled(const std::atomic<bool> &enabled)
 {
@@ -605,6 +618,47 @@ TEST(ServerLoops, DeferredShutdownDoesNotEnterFinalRetirement)
     REQUIRE(fcntl(sockets[0], F_GETFD) >= 0);
 
     REQUIRE(close(sockets[0]) == 0);
+    REQUIRE(close(sockets[1]) == 0);
+    REQUIRE(close(XrdGlobal::devNull) == 0);
+    XrdGlobal::devNull = -1;
+  );
+}
+
+// User: an ordinary close waits for a busy CMS connection while Close(true)
+// shuts down its socket so blocked I/O will wake. The waiting close must still
+// recycle the protocol and release the link-table slot after the user drains.
+// Stock branch guard: #2964 head 08fcbb4d9 treats shutdown's zero Instance as
+// slot reuse and returns without performing any of that final cleanup.
+TEST(ServerLoops, DeferredShutdownPreservesWaitingFinalClose)
+{
+  FINISH_WITHIN(5,
+    XrdInet network(&XrdGlobal::Log);
+    XrdGlobal::XrdNetTCP = &network;
+    REQUIRE(XrdLinkCtl::Setup(1024, 0));
+
+    int sockets[2];
+    REQUIRE(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    XrdGlobal::devNull = open("/dev/null", O_RDONLY);
+    REQUIRE(XrdGlobal::devNull >= 0);
+    XrdNetAddr peer;
+    REQUIRE(peer.Set(sockets[0]) == nullptr);
+    XrdLink *link = XrdLinkCtl::Alloc(peer);
+    REQUIRE(link != nullptr);
+    ReadingProtocol protocol;
+    link->setProtocol(&protocol);
+    link->setRef(1);
+
+    std::atomic<int> result{-1};
+    std::thread closer([&] { result = link->Close(); });
+    while (SerializationWaiters(link) != 1) std::this_thread::yield();
+    REQUIRE(link->Close(true) == 0);
+    REQUIRE(link->Inst() == 0);
+    link->setRef(-1);
+    closer.join();
+
+    REQUIRE(result == 0);
+    REQUIRE(protocol.recycleCount == 1);
+    REQUIRE(XrdLinkCtl::fd2link(sockets[0]) == nullptr);
     REQUIRE(close(sockets[1]) == 0);
     REQUIRE(close(XrdGlobal::devNull) == 0);
     XrdGlobal::devNull = -1;
@@ -1731,6 +1785,51 @@ TEST(ServerLoops, ConcurrentClosesRetireOneConnectionOnce)
     close2.join();
 
     REQUIRE(first == 0 && second == 0);
+    REQUIRE(protocol.recycleCount == 1);
+    REQUIRE(XrdLinkCtl::fd2link(sockets[0]) == nullptr);
+    REQUIRE(close(sockets[1]) == 0);
+  );
+}
+
+// User: one close waits for a busy connection while another close can retire
+// and reuse its persistent slot. The first close must register its wait before
+// releasing the generation lock, or it can sleep on the replacement client.
+// Stock branch guard: 84b24428e reaches the deferred-close trace with no waiter
+// registered; the corrected branch has already registered exactly one waiter.
+TEST(ServerLoops, CloseRegistersGenerationWaitBeforeUnlock)
+{
+  FINISH_WITHIN(10,
+    XrdInet network(&XrdGlobal::Log);
+    XrdGlobal::XrdNetTCP = &network;
+    REQUIRE(XrdLinkCtl::Setup(1024, 0));
+
+    int sockets[2];
+    REQUIRE(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    XrdNetAddr peer;
+    REQUIRE(peer.Set(sockets[0]) == nullptr);
+    XrdLink *link = XrdLinkCtl::Alloc(peer);
+    REQUIRE(link != nullptr);
+    ReadingProtocol protocol;
+    link->setProtocol(&protocol);
+    link->setRef(1);
+
+    XrdSysSemaphore entered(0), release(0);
+    closeTraceEntered = &entered;
+    closeTraceRelease = &release;
+    XrdGlobal::XrdTrace.SetLogger(static_cast<XrdSysLogger *>(nullptr));
+    XrdGlobal::XrdTrace.SetLogger(PauseDeferredCloseTrace);
+    XrdGlobal::XrdTrace.What = TRACE_DEBUG;
+
+    std::atomic<int> result{-1};
+    std::thread closer([&] { result = link->Close(); });
+    entered.Wait();
+    auto *implementation = (XrdLinkXeq *)link;
+    REQUIRE(implementation->LinkInfo.doPost == 1);
+    release.Post();
+    link->setRef(-1);
+    closer.join();
+
+    REQUIRE(result == 0);
     REQUIRE(protocol.recycleCount == 1);
     REQUIRE(XrdLinkCtl::fd2link(sockets[0]) == nullptr);
     REQUIRE(close(sockets[1]) == 0);

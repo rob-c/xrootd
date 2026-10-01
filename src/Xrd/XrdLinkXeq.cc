@@ -241,7 +241,7 @@ int XrdLinkXeq::Close(bool defer)
 int XrdLinkXeq::CloseInstance(unsigned int instance)
 {  XrdSysMutexHelper opHelper(LinkInfo.opMutex);
    int csec, fd, rc = 0;
-   if (Instance != instance || LinkInfo.InUse < 1) return 0;
+   if ((Instance && Instance != instance) || LinkInfo.InUse < 1) return 0;
    if (sendQ)
       {wrMutex.Lock();
        sendQ->Terminate();
@@ -253,18 +253,20 @@ int XrdLinkXeq::CloseInstance(unsigned int instance)
 // actual close until the use count drops to one.
 //
    while(LinkInfo.InUse > 1 || PollInfo.Activity)
-      {TRACEI(DEBUG, "Close FD "<<LinkInfo.FD<<" deferred, use count="
+      {if (LinkInfo.InUse > 1)
+          LinkInfo.doPost++; // Register before this generation can be reused.
+       TRACEI(DEBUG, "Close FD "<<LinkInfo.FD<<" deferred, use count="
                     <<LinkInfo.InUse<<", activity="<<PollInfo.Activity);
        if (LinkInfo.InUse > 1)
           {opHelper.UnLock();
-           Serialize();
+           LinkInfo.IOSemaphore.Wait();
           }
           else {XrdLinkActivityWaiter waiter;
                 waiter.Next = PollInfo.ActivityWaitQ; PollInfo.ActivityWaitQ = &waiter;
                 opHelper.UnLock(); waiter.Wake.Wait();
                }
        opHelper.Lock(&LinkInfo.opMutex);
-       if (Instance != instance || LinkInfo.InUse < 1) return 0;
+       if ((Instance && Instance != instance) || LinkInfo.InUse < 1) return 0;
       }
    LinkInfo.InUse--;
    Instance = 0;
