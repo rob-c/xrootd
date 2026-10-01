@@ -37,11 +37,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # Exercise the portable poll implementation on Linux as well. Reuse the
   # public API tests so backend-specific lock and descriptor state cannot hide.
   add_executable(xrdsys-poll-loop-tests
-    IOEventsCoreTests.cc ../../../src/XrdSys/XrdSysIOEvents.cc)
+    IOEventsCoreTests.cc
+    ../../../src/XrdSys/XrdSysIOEvents.cc
+    ../../../src/XrdSys/XrdSysE2T.cc
+    ../../../src/XrdSys/XrdSysError.cc
+    ../../../src/XrdSys/XrdSysLogger.cc
+    ../../../src/XrdSys/XrdSysLogging.cc
+    ../../../src/XrdSys/XrdSysPthread.cc
+    ../../../src/XrdSys/XrdSysTimer.cc
+    ../../../src/XrdSys/XrdSysUtils.cc)
   target_compile_definitions(xrdsys-poll-loop-tests PRIVATE
     XRD_SYS_IOEVENTS_FORCE_POLL)
   target_link_libraries(xrdsys-poll-loop-tests
-    XrdUtils GTest::gtest GTest::gtest_main)
+    GTest::gtest GTest::gtest_main)
   add_dependencies(xrdloops-unit-tests xrdsys-poll-loop-tests)
   gtest_discover_tests(xrdsys-poll-loop-tests
     TEST_PREFIX "PollFallback." DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 30)

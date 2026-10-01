@@ -935,6 +935,77 @@ TEST(IOEventsCore, PrePollTimeoutRemovalKeepsFallbackTableSerialized)
   }()), ::testing::ExitedWithCode(0), "");
 }
 
+#if defined(__linux__) && defined(XRD_SYS_IOEVENTS_FORCE_POLL)
+// User: a busy fallback poller lets the first timeout on an expanded table
+// expire before its queued initial add. Stock #2962 writes past pollTab in
+// FDRem; the fixed code installs the table before removing the registration.
+TEST(IOEventsCore, PrePollTimeoutRemovalInstallsExpandedTable)
+{
+  ASSERT_EXIT(([] {
+    alarm(20);
+    struct Passive : CallBack
+    {
+      bool Event(Channel *, void *, int) override { return true; }
+      void Fatal(Channel *, void *, int, const char *) override { _exit(2); }
+    } passive;
+    struct Blocking : CallBack
+    {
+      XrdSysSemaphore entered{0}, release{0};
+      bool Event(Channel *channel, void *, int flags) override
+      {
+        Check(flags & CallBack::ReadyToRead);
+        char byte;
+        Check(read(channel->GetFD(), &byte, 1) == 1);
+        entered.Post();
+        release.Wait();
+        return true;
+      }
+      void Fatal(Channel *, void *, int, const char *) override { _exit(3); }
+    } blocking;
+    struct Expired : CallBack
+    {
+      XrdSysSemaphore entered{0};
+      bool Event(Channel *, void *, int flags) override
+      {
+        Check(flags & CallBack::ReadTimeOut);
+        entered.Post();
+        return false;
+      }
+      void Fatal(Channel *, void *, int, const char *) override { _exit(4); }
+    } expired;
+
+    Poller *poller = MakePoller();
+    SocketPair quietSocket, busySocket, timeoutSocket;
+    std::vector<Channel *> fillers;
+    fillers.reserve(1022);
+    for (int i = 0; i < 1022; ++i)
+    {
+      Channel *channel = new Channel(poller, quietSocket.fd[0], &passive);
+      Check(channel->Enable(Channel::readEvents));
+      fillers.push_back(channel);
+    }
+    Channel *busy = new Channel(poller, busySocket.fd[0], &blocking);
+    Check(busy->Enable(Channel::readEvents));
+    busySocket.Write();
+    blocking.entered.Wait();
+
+    Channel *timeout = new Channel(poller, timeoutSocket.fd[0], &expired);
+    pipeWriteStage.store(0, std::memory_order_release);
+    std::thread enabler([&] {
+      pauseBeforeNextWrite = true;
+      Check(timeout->Enable(Channel::readEvents, 1));
+    });
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    blocking.release.Post();
+    while (pipeWriteStage.load(std::memory_order_acquire) != 1)
+      std::this_thread::yield();
+    expired.entered.Wait();
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    _exit(0);
+  }()), ::testing::ExitedWithCode(0), "");
+}
+#endif
+
 // User: A plugin using IOEvents requests explicit fatal notifications and then
 // releases a hung-up connection. Stock reproduced against upstream 5b716c84a:
 // Fatal leaves callback mode set, so Delete waits for an already-finished call.
