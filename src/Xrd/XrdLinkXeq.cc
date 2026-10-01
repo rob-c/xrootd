@@ -260,12 +260,13 @@ int XrdLinkXeq::CloseInstance(unsigned int instance)
        if (LinkInfo.InUse > 1)
           {opHelper.UnLock();
            LinkInfo.IOSemaphore.Wait();
+           opHelper.Lock(&LinkInfo.opMutex);
           }
           else {XrdLinkActivityWaiter waiter;
                 waiter.Next = PollInfo.ActivityWaitQ; PollInfo.ActivityWaitQ = &waiter;
                 opHelper.UnLock(); waiter.Wake.Wait();
+                opHelper.Lock(&LinkInfo.opMutex);
                }
-       opHelper.Lock(&LinkInfo.opMutex);
        if ((Instance && Instance != instance) || LinkInfo.InUse < 1) return 0;
       }
    LinkInfo.InUse--;
