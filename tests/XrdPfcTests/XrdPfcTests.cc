@@ -1,6 +1,9 @@
+#include "XrdPfc/XrdPfcFile.hh"
 #include "XrdPfc/XrdPfcPathParseTools.hh"
 
 #include <gtest/gtest.h>
+
+#include <cerrno>
 
 class PathParseToolTest : public ::testing::Test {
 protected:
@@ -16,6 +19,58 @@ protected:
 };
 
 using namespace XrdPfc;
+
+// End users reach the same result handling through ordinary reads, vector
+// reads, page reads, and block-file reads.  Stock XRootD fails the completed
+// EAGAIN case because its pending marker has the same value; the other rows
+// document when these callers must wait and when they must return immediately.
+TEST(ReadPendingSentinelTest, CompletionStateAndResultAreUnambiguous)
+{
+    struct ReadState
+    {
+        const char *description;
+        long long bytes_read;
+        int error;
+        int pending_chunks;
+        bool synchronous_work_done;
+        bool direct_read_done;
+        bool complete;
+        int expected_result;
+    };
+
+    const ReadState states[] = {
+        {"completed retry error",       0, -EAGAIN,    0, true,  true,  true,  -EAGAIN},
+        {"completed I/O error",       512, -EIO,       0, true,  true,  true,  -EIO},
+        {"completed timeout",           0, -ETIMEDOUT, 0, true,  true,  true,  -ETIMEDOUT},
+        {"completed empty read",        0, 0,          0, true,  true,  true,  0},
+        {"completed successful read", 4096, 0,         0, true,  true,  true,  4096},
+        {"synchronous work remains",    0, 0,          0, false, true,  false, kReadPending},
+        {"cache chunk remains",         0, 0,          1, true,  true,  false, kReadPending},
+        {"direct read remains",         0, 0,          0, true,  false, false, kReadPending},
+        {"all work remains",            0, 0,          1, false, false, false, kReadPending},
+    };
+
+    for (const ReadState &state : states)
+    {
+        SCOPED_TRACE(state.description);
+
+        ReadRequest request(nullptr, nullptr);
+        request.m_bytes_read = state.bytes_read;
+        if (state.error)
+            request.update_error_cond(state.error);
+        request.m_n_chunk_reqs = state.pending_chunks;
+        request.m_sync_done = state.synchronous_work_done;
+        request.m_direct_done = state.direct_read_done;
+
+        ASSERT_EQ(state.complete, request.is_complete());
+        const int result = request.is_complete() ? request.return_value() : kReadPending;
+        EXPECT_EQ(state.expected_result, result);
+        if (state.complete)
+            EXPECT_NE(kReadPending, result);
+        else
+            EXPECT_EQ(kReadPending, result);
+    }
+}
 
 TEST_F(PathParseToolTest, SplitParser)
 {
