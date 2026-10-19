@@ -37,6 +37,7 @@
 
 #include <openssl/asn1.h>
 #include <openssl/asn1t.h>
+#include <openssl/ec.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -134,14 +135,31 @@ static RSA *EVP_PKEY_get0_RSA(EVP_PKEY *pkey)
     }
     return pkey->pkey.rsa;
 }
+
+static EC_KEY *EVP_PKEY_get0_EC_KEY(EVP_PKEY *pkey)
+{
+    if (pkey->type != EVP_PKEY_EC) {
+        return NULL;
+    }
+    return pkey->pkey.ec;
+}
+
+static int EVP_PKEY_up_ref(EVP_PKEY *pkey)
+{
+    CRYPTO_add(&pkey->references, 1, CRYPTO_LOCK_EVP_PKEY);
+    return 1;
+}
 #endif
 
 static int XrdCheckRSA (EVP_PKEY *pkey) {
    int rc;
 #if OPENSSL_VERSION_NUMBER < 0x10101000L
    RSA *rsa = EVP_PKEY_get0_RSA(pkey);
+   EC_KEY *ec = EVP_PKEY_get0_EC_KEY(pkey);
    if (rsa)
       rc = RSA_check_key(rsa);
+   else if (ec)
+      rc = EC_KEY_check_key(ec);
    else
       rc = -2;
 #else
@@ -964,15 +982,13 @@ int XrdCryptosslX509SignProxyReq(XrdCryptoX509 *xcpi, XrdCryptoRSA *kcpi,
       return -kErrPX_NoResources;
    }
 #else
-   RSA *kpi = EVP_PKEY_get0_RSA((EVP_PKEY *)(kcpi->Opaque()));
-   //
-   // Set the key into the request
-   ekpi.reset(EVP_PKEY_new());
-   if (!ekpi) {
+   // Share the key (RSA or not) with the container
+   EVP_PKEY *kpi = (EVP_PKEY *)(kcpi->Opaque());
+   if (!kpi || EVP_PKEY_up_ref(kpi) != 1) {
       PRINT("could not create a EVP_PKEY * instance - return");
       return -kErrPX_NoResources;
    }
-   EVP_PKEY_set1_RSA(ekpi.get(), kpi);
+   ekpi.reset(kpi);
 #endif
 
    // Get request in raw form

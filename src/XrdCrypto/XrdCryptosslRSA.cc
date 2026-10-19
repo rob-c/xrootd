@@ -40,6 +40,7 @@
 #include <cstring>
 
 #include <openssl/bio.h>
+#include <openssl/ec.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
@@ -65,14 +66,28 @@ static void RSA_get0_key(const RSA *r,
     if (d != NULL)
         *d = r->d;
 }
+
+static EC_KEY *EVP_PKEY_get0_EC_KEY(EVP_PKEY *pkey)
+{
+    if (pkey->type != EVP_PKEY_EC) {
+        return NULL;
+    }
+    return pkey->pkey.ec;
+}
+
+#define EVP_MD_CTX_new EVP_MD_CTX_create
+#define EVP_MD_CTX_free EVP_MD_CTX_destroy
 #endif
 
 static int XrdCheckRSA (EVP_PKEY *pkey) {
    int rc;
 #if OPENSSL_VERSION_NUMBER < 0x10101000L
    RSA *rsa = EVP_PKEY_get0_RSA(pkey);
+   EC_KEY *ec = EVP_PKEY_get0_EC_KEY(pkey);
    if (rsa)
       rc = RSA_check_key(rsa);
+   else if (ec)
+      rc = EC_KEY_check_key(ec);
    else
       rc = -2;
 #else
@@ -81,6 +96,49 @@ static int XrdCheckRSA (EVP_PKEY *pkey) {
    EVP_PKEY_CTX_free(ckctx);
 #endif
    return rc;
+}
+
+// Keys other than RSA (e.g. EC) cannot sign with message recovery, so for
+// them EncryptPrivate / DecryptPublic produce / consume a signature with
+// appendix: [4-byte big-endian message length][message][signature]
+static const int kSigHdrLen = 4;
+
+static bool XrdIsRSA(EVP_PKEY *pkey) {
+   return (pkey && EVP_PKEY_base_id(pkey) == EVP_PKEY_RSA);
+}
+
+static const EVP_MD *XrdSigMD(EVP_PKEY *pkey) {
+   // Digest matching the strength of the key
+   int bits = EVP_PKEY_bits(pkey);
+   if (bits > 384) return EVP_sha512();
+   if (bits > 256) return EVP_sha384();
+   return EVP_sha256();
+}
+
+static bool XrdHasPrivate(EVP_PKEY *pkey) {
+   // Whether the key contains a private part
+   bool hasprv = false;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+   BIGNUM *d = 0;
+   const char *prm = XrdIsRSA(pkey) ? OSSL_PKEY_PARAM_RSA_D : OSSL_PKEY_PARAM_PRIV_KEY;
+   hasprv = (EVP_PKEY_get_bn_param(pkey, prm, &d) == 1);
+   BN_free(d);
+#else
+   if (XrdIsRSA(pkey)) {
+      const BIGNUM *d = 0;
+      RSA_get0_key(EVP_PKEY_get0_RSA(pkey), 0, 0, &d);
+      hasprv = (d != 0);
+   } else if (EVP_PKEY_base_id(pkey) == EVP_PKEY_EC) {
+      hasprv = (EC_KEY_get0_private_key(EVP_PKEY_get0_EC_KEY(pkey)) != 0);
+   }
+#endif
+   return hasprv;
+}
+
+//_____________________________________________________________________________
+bool XrdCryptosslKeyIsRSA(XrdCryptoRSA *key)
+{
+   return (key && XrdIsRSA((EVP_PKEY *)(key->Opaque())));
 }
 
 //_____________________________________________________________________________
@@ -206,16 +264,7 @@ XrdCryptosslRSA::XrdCryptosslRSA(const XrdCryptosslRSA &r) : XrdCryptoRSA()
    }
 
    // If the given key is set, copy it via a bio
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
-   BIGNUM *d = BN_new();
-   bool publiconly =
-     (EVP_PKEY_get_bn_param(r.fEVP, OSSL_PKEY_PARAM_RSA_D, &d) != 1);
-   BN_free(d);
-#else
-   const BIGNUM *d = 0;
-   RSA_get0_key(EVP_PKEY_get0_RSA(r.fEVP), 0, 0, &d);
-   bool publiconly = (d == 0);
-#endif
+   bool publiconly = !XrdHasPrivate(r.fEVP);
    //
    // Bio for exporting the pub key
    BIO *bcpy = BIO_new(BIO_s_mem());
@@ -264,6 +313,9 @@ XrdCryptosslRSA::~XrdCryptosslRSA()
 int XrdCryptosslRSA::GetOutlen(int lin)
 {
    // Get minimal length of output buffer
+
+   if (!XrdIsRSA(fEVP))
+      return kSigHdrLen + lin + EVP_PKEY_size(fEVP);
 
    int lcmax = EVP_PKEY_size(fEVP) - 42;
 
@@ -515,6 +567,35 @@ int XrdCryptosslRSA::EncryptPrivate(const char *in, int lin, char *out, int lout
    }
 
    //
+   // Signature with appendix for non-RSA keys
+   if (!XrdIsRSA(fEVP)) {
+      size_t lsig = EVP_PKEY_size(fEVP);
+      if (loutmax < kSigHdrLen + lin + (int)lsig) {
+         DEBUG("output buffer too small");
+         return -1;
+      }
+      unsigned char *sig = (unsigned char *)&out[kSigHdrLen + lin];
+      EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+      bool ok = mdctx &&
+                EVP_DigestSignInit(mdctx, 0, XrdSigMD(fEVP), 0, fEVP) == 1 &&
+                EVP_DigestSignUpdate(mdctx, in, lin) == 1 &&
+                EVP_DigestSignFinal(mdctx, sig, &lsig) == 1;
+      EVP_MD_CTX_free(mdctx);
+      if (!ok) {
+         char serr[120];
+         ERR_error_string(ERR_get_error(), serr);
+         DEBUG("error: " <<serr);
+         return -1;
+      }
+      out[0] = (char)((lin >> 24) & 0xff);
+      out[1] = (char)((lin >> 16) & 0xff);
+      out[2] = (char)((lin >> 8) & 0xff);
+      out[3] = (char)(lin & 0xff);
+      memcpy(&out[kSigHdrLen], in, lin);
+      return kSigHdrLen + lin + (int)lsig;
+   }
+
+   //
    // Private encoding ...
    size_t lcmax = EVP_PKEY_size(fEVP) - 11;  // Magic number (= 2*sha1_outlen + 2)
    size_t lout = 0;
@@ -676,6 +757,37 @@ int XrdCryptosslRSA::DecryptPublic(const char *in, int lin, char *out, int loutm
    if (!out || loutmax <= 0) {
       DEBUG("output buffer undefined");
       return -1;
+   }
+
+   //
+   // Signature with appendix for non-RSA keys: verify and extract the message
+   if (!XrdIsRSA(fEVP)) {
+      const unsigned char *p = (const unsigned char *)in;
+      if (lin <= kSigHdrLen) {
+         PRINT("signed buffer too short");
+         return -1;
+      }
+      size_t lmsg = ((size_t)p[0] << 24) | ((size_t)p[1] << 16) |
+                    ((size_t)p[2] << 8) | (size_t)p[3];
+      if (lmsg == 0 || lmsg >= (size_t)(lin - kSigHdrLen) || lmsg > (size_t)loutmax) {
+         PRINT("signed buffer has inconsistent length");
+         return -1;
+      }
+      size_t lsig = lin - kSigHdrLen - lmsg;
+      EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+      bool ok = mdctx &&
+                EVP_DigestVerifyInit(mdctx, 0, XrdSigMD(fEVP), 0, fEVP) == 1 &&
+                EVP_DigestVerifyUpdate(mdctx, p + kSigHdrLen, lmsg) == 1 &&
+                EVP_DigestVerifyFinal(mdctx, p + kSigHdrLen + lmsg, lsig) == 1;
+      EVP_MD_CTX_free(mdctx);
+      if (!ok) {
+         char serr[120];
+         ERR_error_string(ERR_get_error(), serr);
+         PRINT("signature verification failed: " <<serr);
+         return -1;
+      }
+      memcpy(out, p + kSigHdrLen, lmsg);
+      return (int)lmsg;
    }
 
    size_t lout = 0;

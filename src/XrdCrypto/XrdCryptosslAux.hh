@@ -55,6 +55,9 @@ int XrdCryptosslKDFun(const char *pass, int plen, const char *salt, int slen,
 bool XrdCryptosslX509VerifyCert(XrdCryptoX509 *c, XrdCryptoX509 *r);
 // chain verification
 bool XrdCryptosslX509VerifyChain(XrdCryptoX509Chain *chain, int &errcode);
+// whether a key is RSA; other key types (e.g. EC) sign with appendix and
+// cannot be verified by peers expecting RSA signatures with message recovery
+bool XrdCryptosslKeyIsRSA(XrdCryptoRSA *key);
 // chain export to bucket
 XrdSutBucket *XrdCryptosslX509ExportChain(XrdCryptoX509Chain *c, bool key = 0);
 // chain export to file (proxy file creation)

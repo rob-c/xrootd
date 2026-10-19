@@ -118,7 +118,11 @@ enum kgsiHandshakeOpts {
    kOptsDelChn     = 32,     // 0x0020: Delete chain
    kOptsPxCred     = 64,     // 0x0040: Save delegated proxies as credentials
    kOptsCreatePxy  = 128,    // 0x0080: Request a client proxy
-   kOptsDelPxy     = 256     // 0x0100: Delete the proxy PxyChain
+   kOptsDelPxy     = 256,    // 0x0100: Delete the proxy PxyChain
+   kOptsECSig      = 512     // 0x0200: Client verifies non-RSA (e.g. ECDSA)
+                             //         signatures; capability flag, not
+                             //         tied to XrdSecgsiVERSION so that it
+                             //         can be backported
 };
 
 // Error codes
@@ -527,12 +531,14 @@ public:
    int               Options;       // Handshake options;
    int               HashAlg;       // Hash algorithm of peer hash name;
    XrdSutBuffer     *Parms;         // Buffer with server parms on first iteration 
+   bool              RemECSig;      // Server verifies non-RSA signatures
 
    gsiHSVars() { Iter = 0; TimeStamp = -1; CryptoMod = "";
                  RemVers = -1; Rcip = 0; HasPad = 0;
                  Cbck = 0;
                  ID = ""; Cref = 0; Pent = 0; Chain = 0; Crl = 0; PxyChain = 0;
-                 RtagOK = 0; Tty = 0; LastStep = 0; Options = 0; HashAlg = 0; Parms = 0;}
+                 RtagOK = 0; Tty = 0; LastStep = 0; Options = 0; HashAlg = 0; Parms = 0;
+                 RemECSig = 0;}
 
    ~gsiHSVars() { SafeDelete(Cref);
                   if (Options & kOptsDelChn) {
