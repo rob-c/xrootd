@@ -978,15 +978,13 @@ int XrdCryptosslX509SignProxyReq(XrdCryptoX509 *xcpi, XrdCryptoRSA *kcpi,
       return -kErrPX_NoResources;
    }
 #else
-   RSA *kpi = EVP_PKEY_get0_RSA((EVP_PKEY *)(kcpi->Opaque()));
-   //
-   // Set the key into the request
-   ekpi.reset(EVP_PKEY_new());
-   if (!ekpi) {
+   // Share the key (RSA or not) with the container
+   EVP_PKEY *kpi = (EVP_PKEY *)(kcpi->Opaque());
+   if (!kpi || EVP_PKEY_up_ref(kpi) != 1) {
       PRINT("could not create a EVP_PKEY * instance - return");
       return -kErrPX_NoResources;
    }
-   EVP_PKEY_set1_RSA(ekpi.get(), kpi);
+   ekpi.reset(kpi);
 #endif
 
    // Get request in raw form

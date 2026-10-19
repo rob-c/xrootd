@@ -56,6 +56,7 @@
 #include "XrdCrypto/XrdCryptoMsgDigest.hh"
 #include "XrdCrypto/XrdCryptoX509Chain.hh"
 #include "XrdCrypto/XrdCryptoX509Req.hh"
+#include "XrdCrypto/XrdCryptosslAux.hh"
 
 #include "XrdSecgsi/XrdSecProtocolgsi.hh"
 #include "XrdSecgsi/XrdSecgsiOpts.hh"
@@ -130,6 +131,7 @@ static const int kOneDay = 86400;
 static const char *gUsrPxyDef = "/tmp/x509up_u";
 // Tag for pad support
 static const char *gNoPadTag = "nopad";
+static const char *gECSigTag = "ecsig";
 // static const char *gPadTag = "&pad";
 
 
@@ -1585,7 +1587,7 @@ XrdSecCredentials *XrdSecProtocolgsi::getCredentials(XrdSecParameters *parm,
       //
       // Add bucket with our delegate proxy options
       if (hs->RemVers >= 10100) {
-         if (bpar->MarshalBucket(kXRS_clnt_opts,(kXR_int32)(hs->Options)) != 0)
+         if (bpar->MarshalBucket(kXRS_clnt_opts,(kXR_int32)(hs->Options | kOptsECSig)) != 0)
          return ErrC(ei,bpar,bmai,0, kGSErrCreateBucket,
                 XrdSutBuckStr(kXRS_clnt_opts),"global",stepstr);
       }
@@ -1607,6 +1609,13 @@ XrdSecCredentials *XrdSecProtocolgsi::getCredentials(XrdSecParameters *parm,
          return ErrC(ei,bpar,bmai,0,
                      kGSErrNoPublic,"session",stepstr);
 
+      //
+      // Servers that cannot verify non-RSA (e.g. ECDSA) signatures must not
+      // be sent any: older ones may even crash on them
+      if (sessionKsig && !XrdCryptosslKeyIsRSA(sessionKsig) && !hs->RemECSig)
+         return ErrC(ei,bpar,bmai,0, kGSErrBadCreds,
+                     "the client key is non-RSA (e.g. ECDSA) and the server does"
+                     " not support it: use a proxy (e.g. xrdgsiproxy init)",stepstr);
       //
       // If server supports decoding of signed DH, do sign them
       if (hs->RemVers >= XrdSecgsiVersDHsigned) {
@@ -1800,6 +1809,8 @@ int XrdSecProtocolgsi::Authenticate(XrdSecCredentials *cred,
    // Proxy export related
    XrdOucString spxy;
    XrdSutBucket *bpxy = 0;
+   // List of supported MDs
+   String mdlist;
 
    //
    // Decode received buffer
@@ -1863,6 +1874,17 @@ int XrdSecProtocolgsi::Authenticate(XrdSecCredentials *cred,
          return ErrS(hs->ID,ei,bpar,bmai,0, kGSErrNoPublic,
                                          "session",stepstr);
 
+      // Clients that cannot verify non-RSA (e.g. ECDSA) signatures must not
+      // be sent a certificate with such a key: older ones may even crash on it
+      if (sessionKsig && !XrdCryptosslKeyIsRSA(sessionKsig) &&
+          !(hs->Options & kOptsECSig)) {
+         PRINT("client " << Entity.tident << " (gsi version " << hs->RemVers <<
+               ") does not support the non-RSA key of the server certificate");
+         return ErrS(hs->ID,ei,bpar,bmai,0, kGSErrError,
+                     "server certificate has a non-RSA (e.g. ECDSA) key, which"
+                     " this client does not support: upgrade the client",stepstr);
+      }
+
       // If client supports decoding of signed DH, do sign them
       if (hs->RemVers >= XrdSecgsiVersDHsigned) {
          bck = new XrdSutBucket(bpub,lpub,kXRS_cipher);
@@ -1893,8 +1915,11 @@ int XrdSecProtocolgsi::Authenticate(XrdSecCredentials *cred,
          return ErrS(hs->ID,ei,bpar,bmai,0,
               kGSErrAddBucket,XrdSutBuckStr(kXRS_cipher_alg),stepstr);
       //
-      // Add bucket with list of supported MDs
-      if (bpar->AddBucket(DefMD,kXRS_md_alg) != 0)
+      // Add bucket with list of supported MDs; the trailing tag tells clients
+      // that we verify non-RSA signatures (older clients pick the first known
+      // digest and never look at it)
+      mdlist = DefMD; mdlist += ":"; mdlist += gECSigTag;
+      if (bpar->AddBucket(mdlist,kXRS_md_alg) != 0)
          return ErrS(hs->ID,ei,bpar,bmai,0,
               kGSErrAddBucket,XrdSutBuckStr(kXRS_md_alg),stepstr);
       //
@@ -3378,6 +3403,9 @@ int XrdSecProtocolgsi::ClientDoCert(XrdSutBuffer *br, XrdSutBuffer **bm,
    if ((bck = br->GetBucket(kXRS_md_alg))) {
       String mdlist;
       bck->ToString(mdlist);
+      // Does the server verify non-RSA signatures?
+      String ectag = ":"; ectag += gECSigTag;
+      hs->RemECSig = mdlist.endswith(ectag.c_str());
       // Parse the list
       int from = 0;
       while ((from = mdlist.tokenize(md, from, ':')) != -1) {
