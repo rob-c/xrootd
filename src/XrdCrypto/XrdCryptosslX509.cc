@@ -158,10 +158,12 @@ XrdCryptosslX509::XrdCryptosslX509(const char *cf, const char *kf)
       // This call fills the full key, i.e. also the public part (not really documented, though)
       if ((evpp = PEM_read_PrivateKey(fk,0,0,0))) {
          DEBUG("RSA key completed ");
-         // Test consistency
-         if (RSA_check_key(EVP_PKEY_get0_RSA(evpp)) != 0) {
-            // Save it in pki
-            pki = new XrdCryptosslRSA(evpp);
+         // Test consistency (RSA or EC) and save it in pki
+         XrdCryptosslRSA *tmprsa = new XrdCryptosslRSA(evpp);
+         if (tmprsa->status == XrdCryptoRSA::kComplete) {
+            pki = tmprsa;
+         } else {
+            delete tmprsa;
          }
       } else {
          DEBUG("cannot read the key from file");

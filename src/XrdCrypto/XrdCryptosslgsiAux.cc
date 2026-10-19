@@ -37,6 +37,7 @@
 
 #include <openssl/asn1.h>
 #include <openssl/asn1t.h>
+#include <openssl/ec.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -113,7 +114,30 @@ static RSA *EVP_PKEY_get0_RSA(EVP_PKEY *pkey)
     }
     return pkey->pkey.rsa;
 }
+
+static EC_KEY *EVP_PKEY_get0_EC_KEY(EVP_PKEY *pkey)
+{
+    if (pkey->type != EVP_PKEY_EC) {
+        return NULL;
+    }
+    return pkey->pkey.ec;
+}
+
+static int EVP_PKEY_up_ref(EVP_PKEY *pkey)
+{
+    CRYPTO_add(&pkey->references, 1, CRYPTO_LOCK_EVP_PKEY);
+    return 1;
+}
 #endif
+
+static int XrdCheckKey(EVP_PKEY *pkey) {
+   // Consistency check of RSA or EC keys
+   if (EVP_PKEY_base_id(pkey) == EVP_PKEY_RSA)
+      return RSA_check_key(EVP_PKEY_get0_RSA(pkey));
+   if (EVP_PKEY_base_id(pkey) == EVP_PKEY_EC)
+      return EC_KEY_check_key(EVP_PKEY_get0_EC_KEY(pkey));
+   return 0;
+}
 
 int XrdCryptosslX509Asn1PrintInfo(int tag, int xclass, int constructed, int indent);
 int XrdCryptosslX509FillUnknownExt(XRDGSI_CONST unsigned char **pp, long length);
@@ -303,7 +327,7 @@ int XrdCryptosslX509CreateProxy(const char *fnc, const char *fnk,
    }
    fclose(fk);
    // Check key consistency
-   if ((RSA_check_key(EVP_PKEY_get0_RSA(ekEEC)) == 0)) {
+   if (XrdCheckKey(ekEEC) == 0) {
       PRINT("inconsistent key loaded");
       EVP_PKEY_free(ekEEC);
       X509_free(xEEC);
@@ -898,15 +922,12 @@ int XrdCryptosslX509SignProxyReq(XrdCryptoX509 *xcpi, XrdCryptoRSA *kcpi,
       return -kErrPX_BadEECkey;
    }
    // Point to the cerificate
-   RSA *kpi = EVP_PKEY_get0_RSA((EVP_PKEY *)(kcpi->Opaque()));
-   //
-   // Set the key into the request
-   EVP_PKEY *ekpi = EVP_PKEY_new();
-   if (!ekpi) {
+   // Share the key (RSA or not) with the container
+   EVP_PKEY *ekpi = (EVP_PKEY *)(kcpi->Opaque());
+   if (!ekpi || EVP_PKEY_up_ref(ekpi) != 1) {
       PRINT("could not create a EVP_PKEY * instance - return");
       return -kErrPX_NoResources;
    }
-   EVP_PKEY_set1_RSA(ekpi, kpi);
 
    // Get request in raw form
    X509_REQ *xri = (X509_REQ *)(xcri->Opaque());
